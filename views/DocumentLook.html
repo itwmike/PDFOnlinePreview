@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="renderer" content="webkit">
+    <meta name="viewport" content="width=device-width, initial-scale=1,maximum-scale=1">
+    <title>文档查看</title>
+    <script src="http://ajax.aspnetcdn.com/ajax/jquery/jquery-1.9.1.min.js"></script>
+    <script src="../script/pdf.js"></script>
+    <style type="text/css">
+        * {
+            margin: 0px;
+            padding: 0px;
+        }
+        body{
+            font-family: "微软雅黑";
+        }
+        a{
+            text-decoration:none;
+        }
+        .wrapperBox {
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .canvasWrapper {
+            margin: 0 auto;
+            border-left: 1px solid #ccc;
+            border-right: 1px solid #ccc;
+            border-top: 1px solid #ccc;
+            border-bottom: 1px solid #ccc;
+        }
+
+        .wrapperHead {
+            position: fixed;
+            left: 0px;
+            right: 0px;
+            top: 0px;
+            height: 36px;
+            text-align: center;
+            margin: 0 auto;
+            background-color: #474747;
+        }
+
+        .wrapperHead ul {
+            list-style: none;
+            height: 36px;
+            width: 168px;
+            margin: 0 auto;
+        }
+        .wrapperHead ul::after {
+            display: block;
+            content: '';
+            clear: both;
+        }
+        .wrapperHead li {
+            color: #FFF;
+            float: left;
+            height: 36px;
+            line-height: 36px;
+            cursor: pointer;
+            margin-right: 8px;
+        }
+
+        .wrapperContent {
+            margin-top: 36px;
+            overflow-x: hidden;
+            margin-bottom: 10px;
+        }
+        .progressHead{
+            height: 2px;
+            display: none;
+        }
+        .progressPercentage{
+            background-color: red;
+            height: 100%;
+            width: 0%;
+        }
+        .modal-mask-box
+        {
+            display: none;
+            position: fixed;
+            left: 0;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            background-color: rgba(0,0,0,.3);
+            filter: alpha(opacity=30);
+            z-index: 9999;
+        }
+        .modal-mask-box span
+        {
+            color: #FFFFFF;
+            position: absolute;
+            display: inline-block;
+            height: 30px;
+            line-height: 30px;
+            padding: 10px;
+            background-color: rgba(0,0,0,.6);
+            filter: alpha(opacity=60);
+            border: none;
+            left: 40%;
+            top: 160px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="wrapperHead">
+        <ul>
+            <li class="btn_prePage">上一页</li>
+            <li>
+                <span class="txt-page">1</span>/<span class="txt-totalPageNums">1</span>
+            </li>
+            <li class="btn_nextPage">下一页</li>
+        </ul>
+
+        <div class="progressHead">
+            <div class="progressPercentage"></div>
+        </div>
+    </div>
+
+    <div class="wrapperContent">
+
+    </div>
+
+    <div class="modal-mask-box">
+        <span>加载中，请稍后...</span>
+    </div>
+</div>
+
+<script type="text/javascript">
+    PDFJS.workerSrc = '../script/pdf.worker.js';//
+    var pdfDocument;
+    var urlArr = [ ];
+    var wrapperContent = document.getElementsByClassName("wrapperContent")[0];
+    var currentPageNums = 0;//当前pdf分片文件的总页数
+    var currentPageIndex = 1;//当前页面中正在浏览的页数，默认从第一页开始浏览
+    var havPageNums = 0;//已经加载到页面的分片文件总页数
+    var totalPageNums = 0;//所有PDF分片文件的总页数
+    var viewportArr=[];
+    var isLoad=false;
+    var fileId=getUrlParam("fileId");
+    var viewGuid=getUrlParam("viewGuid");
+    var type=getUrlParam("type");
+
+    $(".btn_prePage").click(function () {
+        currentPageIndex--;
+        if (currentPageIndex <= 0) currentPageIndex = 1;
+        goAnchor();
+    });
+    $(".btn_nextPage").click(function () {
+        if (currentPageIndex + 1 > totalPageNums) {
+            return;//如果已经是最后一页，则不做处理
+        }
+        currentPageIndex++;
+        if (currentPageIndex > havPageNums) {
+            //已经超出已加载分片文件的总页数，加载下一个分片文件
+            loadPdf( );
+        } else {
+            goAnchor();
+        }
+    });
+    $('canvsa').on('contextmenu',  function(e){ return false; });
+    $(window).on('scroll', scrollToAnchor);
+    window.addEventListener("onorientationchange" in window ? "orientationchange" : "resize", function() {
+        if (window.orientation == 180 || window.orientation == 0||window.orientation == 90 || window.orientation == -90) {
+            //竖屏状态
+            isLoad=true;
+            $(window).off("scroll");//移除滚动事件，放置渲染过程中的锚点操作。
+            var renderArr=[];
+            $.each(viewportArr,function (index,item) {
+                var canvas=document.getElementById("canvas_" + item.canvsaId);
+                var context = canvas.getContext('2d');
+                var newscale=$(window).width()/item.oldviewport.width; //设置全屏模式
+                var newViewport=item.viewport.clone({scale:newscale});
+                canvas.height = newViewport.height;
+                canvas.width = newViewport.width;
+                var renderContext = {
+                    canvasContext: context,
+                    viewport: newViewport
+                };
+                renderArr.push(item.page.render(renderContext));
+            })
+            Promise.all(renderArr).then(function () {
+                goAnchor();
+                setTimeout(function () {
+                    isLoad=false;
+                },1000);
+                renderArr=undefined;
+            });
+        }
+    }, false);
+    loadDocumentInfo();
+
+    function loadPdf( ) {
+        if(isLoad || urlArr.length==0)return;
+        $(".progressHead").show();
+        isLoad=true;
+        pdfDocument = PDFJS.getDocument(urlArr.shift() ,null,null,function (progress) {
+            var percentage=(progress.loaded/progress.total)*100;
+            $(".progressPercentage").animate({ width:percentage+"%"},100,"swing");
+        }).then(function (pdf) {
+            $(".progressHead").hide();
+            isLoad=false;
+            currentPageNums = pdf.numPages;//获取pdf分片文件的总页数
+            if(totalPageNums==1){
+                //如果源文件是pdf文件，那么后台返回的 totalPageNums 是1，所以这个地方需要根据实际情况设置
+                totalPageNums=currentPageNums;
+                $(".txt-totalPageNums").text(totalPageNums);
+            }
+            var lasthavPageNums = havPageNums;
+            havPageNums += currentPageNums;
+            //循环渲染每一页的数据到canvas
+            var thenArr=[];
+            for (var i = 1; i <= currentPageNums; i++) {
+                var boxId = (i + lasthavPageNums);
+                var canvas = document.createElement("canvas");
+                canvas.id = "canvas_" + boxId;
+                canvas.className = "canvasWrapper";
+                canvas.oncontextmenu=function(e){return false;}//禁用右键功能
+                var wrapperBox = document.createElement("div");
+                wrapperBox.id = "wrapperBox_" + boxId;
+                wrapperBox.className = "wrapperBox";
+                wrapperBox.appendChild(canvas);
+
+                wrapperContent.appendChild(wrapperBox);
+                var nextThen=pdf.getPage(i).then(function (page) {
+
+                    var boxId_temp = (page.pageNumber + lasthavPageNums);
+                    var canvas_temp=document.getElementById("canvas_"+boxId_temp);
+
+                    var oldviewport = page.getViewport(1);
+                    var newscal=$(window).width()/oldviewport.width; //设置全屏模式
+                    var viewport = page.getViewport(newscal);
+                    viewportArr.push({"page":page,"viewport":viewport,"oldviewport":oldviewport,"canvsaId":boxId_temp});
+
+                    canvas_temp.height = viewport.height;
+                    canvas_temp.width = viewport.width;
+
+                    var renderContext = {
+                        canvasContext: canvas_temp.getContext('2d'),
+                        viewport: viewport
+                    };
+                    return page.render(renderContext);
+                },function (res) {
+                });
+                thenArr.push(nextThen);
+            }
+            Promise.all(thenArr).then(function () {
+                thenArr=undefined;
+                if (currentPageIndex != 1) {
+                    goAnchor();
+                }
+            });
+        },function (res) {
+            $(".progressHead").hide();
+            isLoad=false;
+            alert("文件加载失败！");
+        });
+    }
+    //跳转到指定的锚点
+    function goAnchor() {
+        $(window).off("scroll");
+        $(".txt-page").text(currentPageIndex);
+        $("html, body").animate(
+            {scrollTop: $("#wrapperBox_" + currentPageIndex).offset().top+10}, 500, "swing",
+            function () {
+                $(window).on("scroll", scrollToAnchor);
+            }
+        );
+    }
+    //滚动条滚动的同时对锚点进行赋值
+    function scrollToAnchor() {
+        var scrollTop = $(document).scrollTop();//滚动条滚动的高度
+        var documentHeight=$(document).height();//当前文档区域的高度
+        var windowHeight=$(window).height();//当前浏览器窗口的可视高度
+
+        var len = $(".wrapperBox").length;
+        for (var i = len - 1; i >= 0; i--) {
+            var that = $(".wrapperBox").eq(i);
+            if (that.length == 0)continue;
+            if (scrollTop >= that.offset().top) {
+                currentPageIndex = i + 1;
+                $(".txt-page").text(currentPageIndex);
+                break;
+            }
+        }
+        if(documentHeight-scrollTop-windowHeight==0){
+            //如果滚动条到底部的距离小于20px这个阙值时，加载下一个pdf分片文件
+            if (currentPageIndex + 1 > totalPageNums) {
+                return;//如果已经是最后一页，则不做处理
+            }
+            if (currentPageIndex+1 > havPageNums) {
+                currentPageIndex+=1;
+                //已经超出已加载分片文件的总页数，加载下一个分片文件
+                loadPdf( );
+            }else{
+                //这里在手机浏览器上会用到
+                currentPageIndex+=1;
+                loadPdf( );
+            }
+        }
+    }
+
+    //获取url中的参数
+    function getUrlParam(name) {
+        var reg = new RegExp("(^|&)" + name + "=([^&]*)(&|$)"); //构造一个含有目标参数的正则表达式对象
+        var r = window.location.search.substr(1).match(reg);  //匹配目标参数
+        if (r != null) return unescape(r[2]); return null; //返回参数值
+    }
+
+    //加载文档信息
+    function  loadDocumentInfo() {
+        $(".modal-mask-box").show();
+
+        urlArr.push("./1.pdf");
+        urlArr.push("./2.pdf");
+        totalPageNums=6;
+        $(".txt-totalPageNums").text(totalPageNums);
+        loadPdf();
+        $(".modal-mask-box").hide();
+    }
+</script>
+</body>
+</html>
+  
